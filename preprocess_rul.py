@@ -12,8 +12,8 @@ OUTPUT_DIR = DATA_DIR / "preprocessed_rul"
 # Config
 BATTERY_IDS = ["B0005", "B0006", "B0007", "B0018"]
 EOL_CAPACITY = 1.4  # 30% fade from 2 Ahr
-MIN_CAPACITY_OUTLIER = 0.5  # Filter cycles with capacity < this
-INITIAL_CYCLES_FOR_BASELINE = 5  # Use first N cycles for capacity baseline
+MIN_CAPACITY_OUTLIER = 0.5
+INITIAL_CYCLES_FOR_BASELINE = 5
 
 
 def ensure_filename(filename) -> str:
@@ -231,6 +231,10 @@ def main():
     test_df.to_csv(OUTPUT_DIR / "rul_test.csv", index=False)
     print(f"Train: {len(train_df)} rows (B0005, B0006, B0007)")
     print(f"Test: {len(test_df)} rows (B0018)")
+
+    # Generate preprocessing visualizations
+    from preprocess_visualize import generate_all as generate_preprocess_plots
+    generate_preprocess_plots()
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ FEATURE_COLS = [
 
 
 def load_data(feature_cols=None):
-    """Load train/test data. Returns X_train, y_train, X_test, y_test, feature_cols."""
+    """Load train/test data. Returns X_train, y_train, X_test, y_test, feature_cols, train_df, test_df."""
     train = pd.read_csv(DATA_DIR / "rul_train.csv")
     test = pd.read_csv(DATA_DIR / "rul_test.csv")
     base = feature_cols if feature_cols is not None else FEATURE_COLS
@@ -31,7 +31,7 @@ def load_data(feature_cols=None):
     y_train = train["RUL"]
     X_test = test[cols].fillna(0)
     y_test = test["RUL"]
-    return X_train, y_train, X_test, y_test, cols
+    return X_train, y_train, X_test, y_test, cols, train, test
 
 
 def print_metrics(name, y_train, y_pred_train, y_test, y_pred_test):

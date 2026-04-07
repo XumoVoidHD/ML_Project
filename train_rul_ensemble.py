@@ -3,9 +3,9 @@ RUL prediction using ensemble of multiple models.
 Averages predictions from Random Forest, Gradient Boosting, and optionally XGBoost.
 """
 
-import numpy as np
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, VotingRegressor
 from rul_utils import load_data, print_metrics
+from rul_visualize import generate_all_plots
 
 try:
     import xgboost as xgb
@@ -15,7 +15,7 @@ except ImportError:
 
 
 def main():
-    X_train, y_train, X_test, y_test, feature_cols = load_data()
+    X_train, y_train, X_test, y_test, feature_cols, train_df, test_df = load_data()
 
     estimators = [
         ("rf", RandomForestRegressor(n_estimators=100, random_state=42)),
@@ -34,6 +34,8 @@ def main():
     print_metrics(name, y_train, y_pred_train, y_test, y_pred_test)
     print(f"\nModels: {[e[0] for e in estimators]}")
     print(f"Features: {feature_cols}")
+
+    generate_all_plots(model, X_train, y_train, X_test, y_test, train_df, test_df, feature_cols, name, "ensemble")
 
 
 if __name__ == "__main__":
