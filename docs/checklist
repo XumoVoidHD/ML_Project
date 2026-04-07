@@ -1,0 +1,176 @@
+Goal
+Build a Streamlit app where you can:
+- choose a model from the frontend
+- train multiple ML models on the same battery RUL dataset
+- run predictions from the UI
+- compare each model's accuracy and metrics on the frontend
+- optionally save trained models so the app does not retrain every time
+
+Checklist
+
+1. Define the dashboard workflow
+- Decide whether the app should train models live in Streamlit or load already trained models from disk.
+- Decide whether prediction will be done on the held-out test battery only, or also on custom user input.
+- Decide which metrics to show: `MAE`, `RMSE`, and `R2` are the best fit for this repo.
+
+2. Standardize the training pipeline
+- Refactor the current training logic so every model uses the same dataset split, same feature columns, and same preprocessing.
+- Make sure all models train from the same `X_train`, `y_train`, `X_test`, `y_test`.
+- Keep one shared feature list so the dashboard compares models fairly.
+
+3. Expand the set of supported models
+- Add a common interface for multiple regressors.
+- Start with:
+  - Linear Regression
+  - Ridge
+  - Lasso
+  - Decision Tree
+  - Random Forest
+  - Gradient Boosting
+  - Extra Trees
+  - AdaBoost
+  - XGBoost if installed
+- Keep model creation in one function like `build_model(model_name)`.
+
+4. Create a reusable evaluation layer
+- Compute metrics for every trained model.
+- Save:
+  - train metrics
+  - test metrics
+  - predictions
+  - feature names
+- Make sure results are stored in a consistent dictionary or dataframe so Streamlit can display them easily.
+
+5. Decide on training behavior
+- Option A: Train all models once, save artifacts, and let Streamlit only load them.
+- Option B: Let the user click a button in Streamlit to train selected models.
+- Option C: Support both.
+- For this assignment, Option C is probably best.
+
+6. Save trained artifacts
+- Save each trained model to `artifacts/`.
+- Save each model's metrics as JSON.
+- Save predictions as CSV.
+- Use a consistent naming pattern like:
+  - `rul_random_forest.pkl`
+  - `rul_random_forest_metrics.json`
+  - `rul_random_forest_test_predictions.csv`
+
+7. Create a model comparison table
+- Build one table showing all models side by side.
+- Include:
+  - model name
+  - train MAE
+  - test MAE
+  - test RMSE
+  - test R2
+- Sort by best test metric, usually lowest `MAE` or `RMSE`.
+
+8. Build the Streamlit app layout
+- Add a sidebar for controls.
+- Main sections could be:
+  - dataset overview
+  - model training controls
+  - model comparison metrics
+  - single-model prediction view
+  - plots
+- Keep the UI simple and assignment-friendly first.
+
+9. Add frontend controls
+- Add a dropdown or multiselect for model choice.
+- Add buttons for:
+  - train selected model
+  - train all models
+  - load saved models
+  - run prediction
+- Add a checkbox for `rebuild preprocessed data`.
+
+10. Show model performance on the frontend
+- Display a metrics table.
+- Add highlighted cards for the currently selected model.
+- Clearly label train vs test performance so there is no confusion.
+
+11. Show prediction outputs
+- For the chosen model, display predicted vs actual RUL on the test battery.
+- Show row-level predictions in a table.
+- Include absolute error per cycle.
+
+12. Add plots for comparison
+- Add at least these charts:
+  - actual vs predicted RUL line plot
+  - model comparison bar chart for `MAE` or `RMSE`
+  - scatter plot of actual vs predicted
+- These will make the dashboard much stronger for presentation.
+
+13. Support custom input prediction
+- Decide whether the user should enter one battery-cycle row manually.
+- If yes, create input widgets for the feature columns.
+- Ensure the app uses the exact same feature ordering as training.
+
+14. Handle preprocessing consistency
+- Make sure whatever the model sees in Streamlit matches training preprocessing.
+- If normalized or scaled values are already in the CSV, use those consistently.
+- Avoid retraining on one format and predicting on another.
+
+15. Add caching in Streamlit
+- Cache data loading.
+- Cache model loading.
+- Optionally cache training results if training inside the app.
+- This will make the frontend much faster.
+
+16. Add dependency and environment support
+- Confirm `streamlit` is added to `requirements.txt`.
+- Confirm optional libraries like `xgboost` are installed only if you want that model.
+- Make sure the app has a clear run command like `streamlit run app.py`.
+
+17. Create a clean app entrypoint
+- Add a dedicated file like `app.py` or `streamlit_app.py`.
+- Keep ML logic outside the UI file where possible.
+- The app file should mostly orchestrate loading, training, predicting, and displaying.
+
+18. Refactor code into reusable modules
+- Move shared logic out of `predict_rul.py` if needed.
+- Likely separate into:
+  - data loading
+  - model building
+  - training and evaluation
+  - artifact saving and loading
+  - Streamlit UI
+- This keeps the app manageable as we add models.
+
+19. Add basic error handling
+- Show friendly messages if:
+  - preprocessed data is missing
+  - a model artifact is missing
+  - `xgboost` is not installed
+  - training fails
+- Streamlit should fail gracefully, not crash silently.
+
+20. Define the final user flow
+- User opens dashboard
+- app loads dataset and available artifacts
+- user selects model or models
+- user trains or loads model or models
+- app displays metrics
+- user picks one model for detailed prediction
+- app shows actual vs predicted RUL and charts
+
+Suggested implementation order
+1. Refactor shared training and evaluation code
+2. Add multiple models under one interface
+3. Save and load artifacts cleanly
+4. Build the Streamlit app shell
+5. Add model comparison table
+6. Add single-model prediction display
+7. Add plots
+8. Add optional custom input prediction
+
+Best first scope
+For the first working version, keep it to:
+- train or load multiple models
+- choose model in Streamlit
+- show `MAE`, `RMSE`, `R2`
+- show actual vs predicted plot for the test battery
+
+Recommended first step
+Start with Step 1: refactor the training pipeline into reusable functions, because everything else depends on that cleanly.

@@ -1,0 +1,29 @@
+{
+  "model": "gradient_boosting",
+  "train": {
+    "mae": 0.6270409892892252,
+    "rmse": 0.8712817143598912,
+    "r2": 0.9996574786473379
+  },
+  "test": {
+    "mae": 10.587118992021496,
+    "rmse": 12.531068777658545,
+    "r2": 0.8468092580601615
+  },
+  "feature_cols": [
+    "Capacity",
+    "capacity_fade",
+    "Capacity_normalized",
+    "capacity_fade_normalized",
+    "capacity_derivative",
+    "Re",
+    "Rct",
+    "discharge_duration",
+    "avg_temperature",
+    "voltage_at_100s",
+    "voltage_at_300s",
+    "voltage_at_600s",
+    "ambient_temperature",
+    "discharge_cycle_index"
+  ]
+}

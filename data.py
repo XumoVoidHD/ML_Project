@@ -1,6 +1,3 @@
-import kagglehub
+"""Root wrapper for downloading the dataset helper script."""
 
-# Download latest version
-path = kagglehub.dataset_download("patrickfleith/nasa-battery-dataset")
-
-print("Path to dataset files:", path)
+from scripts.data.download_data import *  # noqa: F401,F403

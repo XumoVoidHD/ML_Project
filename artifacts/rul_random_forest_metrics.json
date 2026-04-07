@@ -1,0 +1,29 @@
+{
+  "model": "random_forest",
+  "train": {
+    "mae": 1.2691524019410927,
+    "rmse": 2.4752772512191883,
+    "r2": 0.9972354900821484
+  },
+  "test": {
+    "mae": 8.148923759041184,
+    "rmse": 11.030098139669708,
+    "r2": 0.8813097497812893
+  },
+  "feature_cols": [
+    "Capacity",
+    "capacity_fade",
+    "Capacity_normalized",
+    "capacity_fade_normalized",
+    "capacity_derivative",
+    "Re",
+    "Rct",
+    "discharge_duration",
+    "avg_temperature",
+    "voltage_at_100s",
+    "voltage_at_300s",
+    "voltage_at_600s",
+    "ambient_temperature",
+    "discharge_cycle_index"
+  ]
+}

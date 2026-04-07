@@ -1,193 +1,387 @@
-# Remaining Useful Life (RUL) Prediction – Project Explanation
+# NASA Battery Dataset RUL Prediction
 
-## 1. Project Objective
+This project predicts Remaining Useful Life (RUL) for lithium-ion batteries using the NASA Ames battery aging dataset. The repo converts raw cycle files into one row per discharge cycle, engineers health indicators, and trains regression models to estimate how many discharge cycles are left before end of life.
 
-The goal of this project is to predict how many discharge cycles remain before a lithium-ion battery reaches failure.
+The local dataset in this repo is a Kaggle mirror of the NASA battery aging data. The original NASA description says the cells were cycled through charge, discharge, and impedance measurements under controlled temperatures, and testing stopped at a 30% capacity fade from the rated 2 Ah capacity to 1.4 Ah.
 
-This is known as **RUL – Remaining Useful Life**.
+## What is in this dataset?
 
-In simple terms: *Given the current condition of a battery, how many cycles are left before it dies?*
+The raw dataset is organized into:
 
----
+- `data/metadata.csv`: one row per recorded cycle, with cycle type, battery id, file name, capacity, and impedance metadata.
+- `data/data/*.csv`: raw time-series files for individual charge, discharge, or impedance cycles.
+- `data/combined_by_battery/*.csv`: battery-level merged tables created by `combine_data_by_battery.py`.
+- `data/preprocessed_rul/*.csv`: cycle-level machine learning tables created by `preprocess_rul.py`.
 
-## 2. Understanding the Dataset
+## Project structure
 
-The dataset comes from NASA battery experiments.
+The repo is now organized like this:
 
-**Four batteries were tested:**
+- `rul/`: reusable project modules for preprocessing, prediction, utilities, and plotting
+- `scripts/training/`: individual model training scripts
+- `scripts/data/`: data download helpers
+- `notebooks/`: exploratory notebooks
+- `docs/`: planning notes such as the dashboard checklist
+- `data/`, `artifacts/`, `figures/`: generated datasets, saved models, and plots
 
-- B0005
-- B0006
-- B0007
-- B0018
+The original root commands are still available through small wrapper files, so commands like `python predict_rul.py` still work.
 
-Each battery was repeatedly:
+In the full metadata table there are:
 
-- Charged
-- Discharged
-- Measured for internal resistance (impedance)
+- 34 batteries
+- 2,815 charge cycles
+- 2,794 discharge cycles
+- 1,956 impedance cycles
+- ambient temperatures: `4`, `22`, `24`, `43`, `44` degrees C
 
-Over time, batteries degrade. As degradation happens:
+This RUL workflow uses four batteries:
 
-- Capacity decreases
-- Internal resistance increases
-- Voltage drops faster during discharge
+| Battery | Total rows | Discharge cycles | Charge cycles | Impedance cycles | Start capacity (Ah) | Final capacity (Ah) | EOL cycle index used here |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| B0005 | 616 | 168 | 170 | 278 | 1.8565 | 1.3251 | 124 |
+| B0006 | 616 | 168 | 170 | 278 | 2.0353 | 1.1857 | 108 |
+| B0007 | 616 | 168 | 170 | 278 | 1.8911 | 1.4325 | 167 |
+| B0018 | 319 | 132 | 134 | 53 | 1.8550 | 1.3411 | 96 |
 
----
+Notes:
 
-## 3. What Is End of Life (EOL)?
+- `B0005`, `B0006`, and `B0007` are the training batteries.
+- `B0018` is the held-out test battery.
+- `B0007` never drops below `1.4 Ah` in the available metadata, so this repo treats its final observed discharge cycle as the effective EOL for labeling.
 
-A battery is considered dead when its capacity drops by 30%.
+## Raw cycle data
 
-| Parameter | Value |
-|-----------|-------|
-| Original capacity | 2.0 Ah |
-| End of Life threshold | 1.4 Ah |
+Each raw CSV contains a time series for one cycle.
 
-**EOL occurs when Capacity ≤ 1.4 Ah**
+Discharge files contain columns like:
 
----
+- `Voltage_measured`
+- `Current_measured`
+- `Temperature_measured`
+- `Current_load`
+- `Voltage_load`
+- `Time`
 
-## 4. What Is RUL?
+Charge files contain:
 
-For each discharge cycle:
+- `Voltage_measured`
+- `Current_measured`
+- `Temperature_measured`
+- `Current_charge`
+- `Voltage_charge`
+- `Time`
 
+Impedance files contain fields related to electrochemical impedance, including:
+
+- `Sense_current`
+- `Battery_current`
+- `Current_ratio`
+- `Battery_impedance`
+- `Rectified_Impedance`
+
+The metadata table also stores:
+
+- `Capacity`: discharge capacity in Ah
+- `Re`: electrolyte resistance
+- `Rct`: charge-transfer resistance
+
+## Scientific meaning of the main variables
+
+These are the important battery-health quantities used in the repo.
+
+### 1. Capacity
+
+Capacity is the amount of charge the battery can deliver during discharge.
+
+Engineering relation:
+
+```text
+Q = integral(I(t) dt)
+Capacity_Ah = (1 / 3600) * integral(I(t) dt)
 ```
-RUL = (EOL cycle) − (current cycle)
+
+Where:
+
+- `Q` is charge
+- `I(t)` is current
+- dividing by `3600` converts coulombs to ampere-hours
+
+As a lithium-ion battery ages, capacity typically decreases.
+
+### 2. State of health / capacity fade
+
+The repo uses normalized capacity as a degradation indicator:
+
+```text
+capacity_fade_i = Capacity_i / mean(Capacity_0 ... Capacity_4)
 ```
 
-**Example:** If battery fails at cycle 150:
+This is a simple State of Health style feature:
 
-| Cycle | RUL |
-|-------|-----|
-| 20 | 130 |
-| 80 | 70 |
-| 149 | 1 |
+```text
+SOH_i ~= Capacity_i / Capacity_initial
+```
 
-RUL is the target variable our model learns to predict.
+### 3. Capacity derivative
 
----
+This captures the local degradation rate from one discharge cycle to the next:
 
-## 5. What Does the Raw Data Look Like?
+```text
+capacity_derivative_i = Capacity_i - Capacity_(i-1)
+```
 
-Each discharge cycle contains time-series data like:
+More negative values usually mean faster degradation.
 
-| Time (s) | Voltage (V) | Current (A) | Temperature (°C) |
-|----------|-------------|-------------|------------------|
-| 0 | 4.2 | 2.0 | 25 |
-| 1 | 4.19 | 2.0 | 25 |
-| 2 | 4.18 | 2.0 | 25 |
-| ... | ... | ... | ... |
+### 4. End of life (EOL)
 
-Each cycle contains hundreds or thousands of rows. Machine learning models cannot directly use this raw time-series data, so we convert:
+NASA defines end of life at 30% fade from rated capacity:
 
-**Time-series data → One row per discharge cycle**
+```text
+Capacity_EOL = 0.7 * 2.0 Ah = 1.4 Ah
+```
 
-This transformation is called **preprocessing**.
+In this repo:
 
----
+```text
+EOL cycle = first discharge cycle where Capacity < 1.4 Ah
+```
 
-## 6. Preprocessing Explained
+If no such cycle exists in the observed data, the last discharge cycle is used.
 
-Preprocessing converts messy experimental data into a clean dataset suitable for machine learning.
+### 5. Remaining Useful Life (RUL)
 
-### Step 1: Keep Only Discharge Cycles
+The prediction target is:
 
-Capacity is measured during discharge. We filter `type == "discharge"`. Each discharge cycle becomes one modeling example.
+```text
+RUL_i = cycle_EOL - cycle_i
+```
 
-### Step 2: Compute RUL
+and then clipped at zero:
 
-For each battery:
+```text
+RUL_i = max(0, cycle_EOL - cycle_i)
+```
 
-1. Find first cycle where Capacity ≤ 1.4 Ah
-2. Compute: `RUL = EOL cycle − current cycle`
+This means a battery near failure has small RUL, while a healthy early-life cycle has large RUL.
 
-This creates the label (target variable).
+### 6. Internal resistance and impedance features
 
-### Step 3: Extract Features from Each Cycle
+The repo uses two impedance-derived health markers:
 
-Instead of using raw time-series, we compute summary features:
+- `Re`: electrolyte resistance
+- `Rct`: charge-transfer resistance
 
-| Feature | Description |
-|---------|-------------|
-| **Capacity** | Remaining charge the battery can store. Decreases as battery ages. |
-| **capacity_fade** | `Capacity / initial_capacity` — normalized degradation indicator |
-| **capacity_derivative** | Difference in capacity between consecutive cycles — shows degradation speed |
-| **discharge_duration** | How long the discharge lasts. Healthy battery → longer; degraded → shorter |
-| **avg_temperature** | Heat affects battery degradation |
-| **voltage_at_100s, 300s, 600s** | Voltage at fixed times — captures shape of discharge curve |
-| **Re, Rct** | Internal resistance from impedance. Increases with aging. Forward-filled from most recent impedance measurement |
+At a high level, terminal voltage is affected by internal resistance:
 
-### Step 4: Train/Test Split by Battery
+```text
+V_terminal(t) ~= OCV(SOC, T) - I(t) * R_internal - eta(t)
+```
 
-- **Train on:** B0005, B0006, B0007
-- **Test on:** B0018
+Where:
 
-*Why?* In real-world scenarios, we train on known batteries and predict on new unseen batteries. This prevents data leakage and memorization.
+- `OCV` is open-circuit voltage
+- `SOC` is state of charge
+- `T` is temperature
+- `eta(t)` represents additional electrochemical overpotentials
 
-### Step 5: Scaling Features
+As batteries age, `Re` and `Rct` often increase, and usable capacity and power capability tend to decrease.
 
-Some features have different numeric ranges. We:
+If you want a simple empirical rule from this dataset: higher `Re` and `Rct` generally correspond to lower RUL.
 
-- Fit scaler on **training data only**
-- Apply same scaling to test data
+### 7. Discharge curve shape
 
-This prevents data leakage.
+The repo extracts voltage at fixed times during discharge:
 
----
+```text
+V_i(100s), V_i(300s), V_i(600s)
+```
 
-## 7. Final Processed Dataset
+For each target time `tau`, the code picks the nearest recorded time sample:
 
-Each row represents **one discharge cycle** with columns:
+```text
+t_star = argmin_t |Time(t) - tau|
+V_i(tau) = Voltage_measured(t_star)
+```
 
-- Capacity
-- capacity_fade
-- capacity_derivative
-- Re
-- Rct
-- discharge_duration
-- avg_temperature
-- voltage_at_100s
-- voltage_at_300s
-- voltage_at_600s
-- **RUL** (target)
+These values summarize the shape of the discharge curve. As a cell degrades, voltage often drops faster.
 
-This is a structured supervised learning dataset.
+### 8. Discharge duration
 
----
+This is computed as:
 
-## 8. Model Training
+```text
+discharge_duration_i = max(Time_i)
+```
 
-After preprocessing:
+Longer discharge duration usually indicates the battery can sustain load longer, which is generally associated with higher capacity and higher RUL.
 
-1. Load train/test data
-2. Train regression models
-3. Predict RUL
-4. Evaluate performance
+### 9. Average temperature
 
-**Models used:**
+The repo also uses:
 
-- Random Forest
-- Gradient Boosting
-- XGBoost
-- Ensemble models
-- Hyperparameter-tuned models
+```text
+avg_temperature_i = (1 / N_i) * sum_k Temperature_i,k
+```
 
-**Metrics used:**
+Temperature matters because battery kinetics and aging both depend strongly on thermal conditions.
 
-- MAE (Mean Absolute Error)
-- RMSE (Root Mean Squared Error)
-- R² Score
+## Empirical relationships in this repo's processed data
 
----
+Using the existing processed table in `data/preprocessed_rul/rul_preprocessed.csv`, the strongest linear correlations with `RUL` are:
 
-## 9. Simple Summary
+| Variable | Correlation with RUL |
+|---|---:|
+| `Capacity` | `+0.913` |
+| `capacity_fade` | `+0.898` |
+| `discharge_duration` | `+0.886` |
+| `voltage_at_600s` | `+0.831` |
+| `discharge_cycle_index` | `-0.834` |
+| `Re` | `-0.674` |
+| `Rct` | `-0.704` |
 
-This project:
+Interpretation:
 
-1. Converts raw battery experiment data into cycle-level health indicators
-2. Computes remaining useful life
-3. Trains machine learning models to predict battery failure
-4. Evaluates performance on an unseen battery
+- higher capacity usually means more cycles remaining
+- longer discharge duration usually means more cycles remaining
+- higher impedance usually means fewer cycles remaining
+- later cycle index usually means fewer cycles remaining
 
-> **In one sentence:** We use battery degradation signals like capacity, voltage behavior, and internal resistance to predict how many cycles remain before failure.
+These are empirical correlations from this processed subset, not universal battery laws.
+
+## How preprocessing works in this repo
+
+`preprocess_rul.py` converts raw cycle files into a supervised learning table.
+
+Step by step:
+
+1. Filter metadata to batteries `B0005`, `B0006`, `B0007`, `B0018`.
+2. Keep discharge cycles as modeling examples.
+3. Convert `Capacity` to numeric.
+4. Compute EOL and label every discharge cycle with `RUL`.
+5. Remove very low-capacity outliers after labeling:
+
+```text
+keep if Capacity >= 0.5 Ah
+```
+
+6. Forward-fill `Re` and `Rct` from the most recent earlier impedance cycle.
+7. Read each discharge CSV and extract:
+   - `discharge_duration`
+   - `avg_temperature`
+   - `voltage_at_100s`
+   - `voltage_at_300s`
+   - `voltage_at_600s`
+8. Add derived features:
+   - `capacity_fade`
+   - `capacity_derivative`
+9. Split by battery:
+   - train: `B0005`, `B0006`, `B0007`
+   - test: `B0018`
+10. Standardize selected features using train-only statistics to avoid leakage.
+
+Important detail: in the saved preprocessed files, some columns such as `Re`, `Rct`, `discharge_duration`, `avg_temperature`, and fixed-time voltages are already standardized. That is why values in `rul_preprocessed.csv` may look different from the raw units.
+
+## Processed feature set
+
+The final table contains:
+
+| Column | Meaning |
+|---|---|
+| `Capacity` | discharge capacity in Ah |
+| `capacity_fade` | capacity divided by baseline capacity |
+| `capacity_derivative` | cycle-to-cycle capacity change |
+| `Re` | standardized electrolyte resistance |
+| `Rct` | standardized charge-transfer resistance |
+| `discharge_duration` | standardized discharge length |
+| `avg_temperature` | standardized mean discharge temperature |
+| `voltage_at_100s` | standardized voltage near 100 s |
+| `voltage_at_300s` | standardized voltage near 300 s |
+| `voltage_at_600s` | standardized voltage near 600 s |
+| `ambient_temperature` | chamber temperature from metadata |
+| `discharge_cycle_index` | 0-based discharge cycle counter |
+| `Capacity_normalized` | per-battery z-score of capacity |
+| `capacity_fade_normalized` | per-battery z-score of normalized capacity |
+| `RUL` | target label in cycles |
+
+## Models in this repo
+
+The repo already includes:
+
+- `scripts/training/train_rul_baseline.py`: Random Forest baseline
+- `scripts/training/train_rul_gradient_boosting.py`: Gradient Boosting regressor
+- `scripts/training/train_rul_extended_features.py`: Random Forest with extended features
+- `scripts/training/train_rul_ensemble.py`: ensemble regressor
+- `scripts/training/train_rul_tuned.py`: grid-searched Random Forest
+- `scripts/training/train_rul_xgboost.py`: XGBoost regressor
+
+## New end-to-end prediction script
+
+This repo now includes `predict_rul.py`, which gives a single command to train and export predictions.
+
+Default behavior:
+
+- loads the preprocessed train and test files
+- trains a Random Forest on the extended feature set
+- predicts RUL on the held-out battery `B0018`
+- saves model, metrics, and prediction CSVs in `artifacts/`
+
+Run it with:
+
+```bash
+python predict_rul.py
+```
+
+Optional arguments:
+
+```bash
+python predict_rul.py --model random_forest
+python predict_rul.py --model gradient_boosting
+python predict_rul.py --rebuild-preprocessed
+```
+
+Saved artifacts:
+
+- `artifacts/rul_random_forest.pkl`
+- `artifacts/rul_random_forest_metrics.json`
+- `artifacts/rul_random_forest_train_predictions.csv`
+- `artifacts/rul_random_forest_test_predictions.csv`
+
+## Recommended workflow
+
+If you want to reproduce everything from raw data:
+
+```bash
+python combine_data_by_battery.py
+python preprocess_rul.py
+python predict_rul.py
+```
+
+If you want to compare several models:
+
+```bash
+python run_all_rul_models.py
+```
+
+You can also run a specific training module directly:
+
+```bash
+python -m scripts.training.train_rul_baseline
+python -m scripts.training.train_rul_gradient_boosting
+```
+
+## Install
+
+```bash
+pip install -r requirements.txt
+```
+
+## Source notes
+
+Primary dataset description:
+
+- NASA PCoE battery aging dataset repository: https://c3.ndc.nasa.gov/dashlink/resources/133
+- NASA PCoE data repository overview: https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/
+
+Local acquisition helper:
+
+- `scripts/data/download_data.py` downloads a Kaggle-hosted mirror via `kagglehub`.
