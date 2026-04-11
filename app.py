@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import json
+import pickle
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
+import torch
+
+from models.baseline_models import LinearRULModel, RandomForestRULModel, RidgeRULModel
+from models.gru_model import BatteryGRURegressor
+from models.lstm_model import BatteryLSTMRegressor
+from models.xgboost_model import XGBoostRULModel
+from preprocessing.dataset import get_latest_sequence_for_battery
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+PROCESSED_DIR = PROJECT_ROOT / "processed"
+
+
+def load_summary() -> pd.DataFrame:
+    summary_path = EXPERIMENTS_DIR / "summary.csv"
+    if not summary_path.exists():
+        return pd.DataFrame()
+    summary = pd.read_csv(summary_path)
+    if "experiment_dir" not in summary.columns:
+        return summary
+    valid_experiment_names = {path.name for path in list_experiment_dirs()}
+    return summary.loc[summary["experiment_dir"].isin(valid_experiment_names)].copy()
+
+
+def load_processed_full() -> pd.DataFrame:
+    full_path = PROCESSED_DIR / "full.csv"
+    if not full_path.exists():
+        raise FileNotFoundError("Run `python preprocessing/pipeline.py` before opening the dashboard.")
+    return pd.read_csv(full_path)
+
+
+def load_scaler_payload() -> dict[str, Any]:
+    with (PROCESSED_DIR / "scaler.pkl").open("rb") as file:
+        return pickle.load(file)
+
+
+def list_experiment_dirs() -> list[Path]:
+    if not EXPERIMENTS_DIR.exists():
+        return []
+    return sorted(
+        [path for path in EXPERIMENTS_DIR.iterdir() if path.is_dir() and is_complete_experiment_dir(path)],
+        reverse=True,
+    )
+
+
+def is_complete_experiment_dir(experiment_dir: Path) -> bool:
+    config_path = experiment_dir / "config.json"
+    metrics_path = experiment_dir / "metrics.json"
+    if not config_path.exists() or not metrics_path.exists():
+        return False
+
+    try:
+        with config_path.open("r", encoding="utf-8") as file:
+            config = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    model_name = config.get("model_name")
+    model_file_name = {
+        "xgboost": "model.json",
+        "linear": "model.pkl",
+        "ridge": "model.pkl",
+        "random_forest": "model.pkl",
+        "lstm": "model.pt",
+        "gru": "model.pt",
+    }.get(model_name)
+    if model_file_name is None:
+        return False
+    return (experiment_dir / model_file_name).exists()
+
+
+def load_experiment_config(experiment_dir: Path) -> dict[str, Any]:
+    with (experiment_dir / "config.json").open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def load_experiment_metrics(experiment_dir: Path) -> dict[str, Any]:
+    with (experiment_dir / "metrics.json").open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def render_model_comparison() -> None:
+    st.header("Model Comparison")
+    st.info(
+        "Use test MAE as the primary ranking because it is easiest to interpret in cycles. "
+        "Use test RMSE as a secondary check because it penalizes large misses more heavily. "
+        "I am not ranking by MAPE here because this dataset includes RUL=0, which makes percentage errors unstable."
+    )
+    summary = load_summary()
+    if summary.empty:
+        st.info("No experiments found yet. Train a model from the Training page.")
+        return
+    display_columns = [column for column in ["experiment_dir", "model_name", "seed", "sequence_length", "test_mae", "test_rmse", "test_r2", "val_mae", "val_rmse", "val_r2"] if column in summary.columns]
+    st.dataframe(summary.sort_values("test_mae")[display_columns], use_container_width=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].bar(summary["experiment_dir"], summary["test_mae"])
+    axes[0].set_title("Test MAE by Experiment")
+    axes[0].tick_params(axis="x", rotation=60)
+
+    axes[1].bar(summary["experiment_dir"], summary["test_rmse"])
+    axes[1].set_title("Test RMSE by Experiment")
+    axes[1].tick_params(axis="x", rotation=60)
+    plt.tight_layout()
+    st.pyplot(fig)
+
+
+def load_row_model(experiment_dir: Path, model_name: str) -> Any:
+    model_path = experiment_dir / ("model.json" if model_name == "xgboost" else "model.pkl")
+    if model_name == "xgboost":
+        return XGBoostRULModel.load(model_path)
+    if model_name == "linear":
+        return LinearRULModel.load(model_path)
+    if model_name == "ridge":
+        return RidgeRULModel.load(model_path)
+    if model_name == "random_forest":
+        return RandomForestRULModel.load(model_path)
+    raise ValueError(f"Unsupported row model: {model_name}")
+
+
+def render_row_model_prediction(full_frame: pd.DataFrame, scaler_payload: dict[str, Any]) -> None:
+    st.subheader("Tabular Model Manual Feature Input")
+    st.caption("This is a what-if tool for the row-based models. You enter one engineered discharge-cycle snapshot and the model predicts RUL for that snapshot.")
+    feature_columns: list[str] = scaler_payload["feature_columns"]
+    scaler = scaler_payload["scaler"]
+    impute_values = scaler_payload["train_impute_values"]
+
+    defaults = {}
+    for column in feature_columns:
+        raw_column = f"raw_{column}"
+        defaults[column] = float(full_frame[raw_column].median()) if raw_column in full_frame.columns else float(impute_values[column])
+
+    inputs = {}
+    for column in feature_columns:
+        inputs[column] = st.number_input(column, value=float(defaults[column]))
+
+    experiment_options = [path for path in list_experiment_dirs() if path.name.startswith(("xgboost_", "linear_", "ridge_", "random_forest_"))]
+    if not experiment_options:
+        st.info("Train at least one row-based model to enable manual predictions.")
+        return
+    selected_experiment = st.selectbox("Tabular experiment", experiment_options, format_func=lambda path: path.name)
+    try:
+        config = load_experiment_config(selected_experiment)
+    except OSError as error:
+        st.error(f"Could not load experiment metadata for {selected_experiment.name}: {error}")
+        return
+
+    if st.button("Predict Tabular RUL"):
+        model = load_row_model(selected_experiment, config["model_name"])
+        input_frame = pd.DataFrame([inputs])[feature_columns]
+        input_frame = input_frame.fillna(impute_values)
+        scaled_values = scaler.transform(input_frame)
+        prediction = model.predict(scaled_values)[0]
+        st.success(f"Predicted RUL with {config['model_name']}: {prediction:.2f} cycles")
+
+
+def load_sequence_model(experiment_dir: Path) -> tuple[torch.nn.Module, dict[str, Any]]:
+    checkpoint = torch.load(experiment_dir / "model.pt", map_location="cpu")
+    feature_columns = checkpoint["feature_columns"]
+    if checkpoint["model_name"] == "lstm":
+        model = BatteryLSTMRegressor(
+            input_dim=len(feature_columns),
+            hidden_dim=checkpoint["hidden_dim"],
+            num_layers=checkpoint["num_layers"],
+            dropout=checkpoint["dropout"],
+            bidirectional=True,
+        )
+    else:
+        model = BatteryGRURegressor(
+            input_dim=len(feature_columns),
+            hidden_dim=checkpoint["hidden_dim"],
+            num_layers=checkpoint["num_layers"],
+            dropout=checkpoint["dropout"],
+        )
+    model.load_state_dict(checkpoint["state_dict"])
+    model.eval()
+    return model, checkpoint
+
+
+def render_sequence_prediction(full_frame: pd.DataFrame) -> None:
+    st.subheader("LSTM / GRU Sequence Prediction")
+    st.caption("This uses the latest N cycles from one battery and asks the sequence model to predict the remaining life from that recent trajectory.")
+    sequence_experiments = [path for path in list_experiment_dirs() if path.name.startswith(("lstm_", "gru_"))]
+    if not sequence_experiments:
+        st.info("Train an LSTM or GRU experiment to enable sequence predictions.")
+        return
+
+    selected_experiment = st.selectbox("Sequence experiment", sequence_experiments, format_func=lambda path: path.name)
+    try:
+        config = load_experiment_config(selected_experiment)
+    except OSError as error:
+        st.error(f"Could not load experiment metadata for {selected_experiment.name}: {error}")
+        return
+    sequence_length = int(config["hyperparameters"]["sequence_length"])
+    model, checkpoint = load_sequence_model(selected_experiment)
+
+    battery_options = sorted(full_frame["battery_id"].dropna().unique().tolist())
+    selected_battery = st.selectbox("Battery", battery_options)
+
+    if st.button("Predict Sequence RUL"):
+        features, sequence_frame = get_latest_sequence_for_battery(
+            full_frame,
+            selected_battery,
+            checkpoint["feature_columns"],
+            sequence_length,
+        )
+        with torch.no_grad():
+            prediction = model(torch.tensor(features).unsqueeze(0)).item()
+        st.success(f"Predicted RUL from last {sequence_length} cycles: {prediction:.2f} cycles")
+        if sequence_frame["RUL"].isna().all():
+            st.caption("This battery is censored in the dataset, so ground-truth RUL is not available for comparison.")
+        st.dataframe(
+            sequence_frame[["battery_id", "discharge_cycle_index", "raw_Capacity", "RUL"]].tail(sequence_length),
+            use_container_width=True,
+        )
+
+
+def render_prediction_page() -> None:
+    st.header("Prediction Page")
+    st.info(
+        "This page is for model probing, not live deployment. The tabular section tests row-based models on a single engineered cycle. "
+        "The sequence section tests recurrent models on a recent cycle window from one battery."
+    )
+    full_frame = load_processed_full()
+    scaler_payload = load_scaler_payload()
+    render_row_model_prediction(full_frame, scaler_payload)
+    st.divider()
+    render_sequence_prediction(full_frame)
+
+
+def render_training_page() -> None:
+    st.header("Training Page")
+    model_name = st.selectbox("Model", ["xgboost", "linear", "ridge", "random_forest", "lstm", "gru"])
+    seed = st.number_input("Seed", min_value=0, value=42, step=1)
+    command = [sys.executable, "train.py", "--model", model_name, "--seed", str(seed)]
+
+    if model_name == "xgboost":
+        col1, col2 = st.columns(2)
+        with col1:
+            n_estimators = st.number_input("n_estimators", min_value=1, value=500, step=50)
+            learning_rate = st.number_input("learning_rate", min_value=0.0001, value=0.05, step=0.01, format="%.4f")
+            max_depth = st.number_input("max_depth", min_value=1, value=4, step=1)
+            min_child_weight = st.number_input("min_child_weight", min_value=0.0, value=2.0, step=0.5, format="%.2f")
+        with col2:
+            subsample = st.number_input("subsample", min_value=0.1, max_value=1.0, value=0.9, step=0.05, format="%.2f")
+            colsample_bytree = st.number_input("colsample_bytree", min_value=0.1, max_value=1.0, value=0.9, step=0.05, format="%.2f")
+            reg_alpha = st.number_input("reg_alpha", min_value=0.0, value=0.0, step=0.1, format="%.2f")
+            reg_lambda = st.number_input("reg_lambda", min_value=0.0, value=1.0, step=0.1, format="%.2f")
+
+        command.extend(
+            [
+                "--n_estimators", str(int(n_estimators)),
+                "--learning_rate", str(float(learning_rate)),
+                "--max_depth", str(int(max_depth)),
+                "--min_child_weight", str(float(min_child_weight)),
+                "--subsample", str(float(subsample)),
+                "--colsample_bytree", str(float(colsample_bytree)),
+                "--reg_alpha", str(float(reg_alpha)),
+                "--reg_lambda", str(float(reg_lambda)),
+            ]
+        )
+    elif model_name == "linear":
+        st.caption("Linear regression is a simple baseline. It has no tunable model hyperparameters in this dashboard.")
+    elif model_name == "ridge":
+        ridge_alpha = st.number_input("alpha", min_value=0.0, value=1.0, step=0.1, format="%.2f")
+        command.extend(["--ridge_alpha", str(float(ridge_alpha))])
+    elif model_name == "random_forest":
+        col1, col2 = st.columns(2)
+        with col1:
+            rf_n_estimators = st.number_input("n_estimators", min_value=1, value=300, step=50)
+            rf_max_depth = st.number_input("max_depth (0 means no limit)", min_value=0, value=0, step=1)
+        with col2:
+            rf_min_samples_leaf = st.number_input("min_samples_leaf", min_value=1, value=1, step=1)
+        command.extend(
+            [
+                "--rf_n_estimators", str(int(rf_n_estimators)),
+                "--rf_max_depth", str(int(rf_max_depth)),
+                "--rf_min_samples_leaf", str(int(rf_min_samples_leaf)),
+            ]
+        )
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            sequence_length = st.number_input("Sequence Length", min_value=2, value=10, step=1)
+            batch_size = st.number_input("Batch Size", min_value=1, value=16, step=1)
+            learning_rate = st.number_input("Learning Rate", min_value=0.0001, value=0.001, step=0.0005, format="%.4f")
+            max_epochs = st.number_input("Max Epochs", min_value=1, value=100, step=10)
+        with col2:
+            patience = st.number_input("Patience", min_value=1, value=12, step=1)
+            hidden_dim = st.number_input("Hidden Dim", min_value=1, value=64, step=8)
+            num_layers = st.number_input("Num Layers", min_value=1, value=2, step=1)
+            dropout = st.number_input("Dropout", min_value=0.0, max_value=0.9, value=0.2, step=0.05, format="%.2f")
+
+        command.extend(
+            [
+                "--sequence_length", str(int(sequence_length)),
+                "--batch_size", str(int(batch_size)),
+                "--learning_rate", str(float(learning_rate)),
+                "--max_epochs", str(int(max_epochs)),
+                "--patience", str(int(patience)),
+                "--hidden_dim", str(int(hidden_dim)),
+                "--num_layers", str(int(num_layers)),
+                "--dropout", str(float(dropout)),
+            ]
+        )
+
+    if st.button("Run Training"):
+        process = subprocess.run(command, cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if process.returncode == 0:
+            st.success(process.stdout.strip() or "Training completed.")
+        else:
+            st.error(process.stderr or process.stdout or "Training failed.")
+
+
+def render_visualization_page() -> None:
+    st.header("Visualization Page")
+    st.info(
+        "This page serves two purposes: first, sanity-check the battery degradation data itself; second, diagnose how a trained model behaves. "
+        "The raw dataset plots help us see whether capacity and RUL trends look physically sensible. The experiment plots help us see whether predictions follow the trend or fail in specific regions."
+    )
+    full_frame = load_processed_full()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for battery_id, battery_frame in full_frame.groupby("battery_id"):
+        battery_frame = battery_frame.sort_values("discharge_cycle_index")
+        cycle_values = battery_frame["raw_discharge_cycle_index"] if "raw_discharge_cycle_index" in battery_frame.columns else battery_frame["discharge_cycle_index"]
+        axes[0].plot(cycle_values, battery_frame["raw_Capacity"], label=battery_id)
+        if battery_frame["RUL"].notna().any():
+            axes[1].plot(cycle_values[battery_frame["RUL"].notna()], battery_frame.loc[battery_frame["RUL"].notna(), "RUL"], label=battery_id)
+    axes[0].set_title("Capacity vs Cycle")
+    axes[0].set_xlabel("Discharge Cycle Index")
+    axes[0].set_ylabel("Capacity (Ah)")
+    axes[0].legend()
+    axes[1].set_title("RUL Trends")
+    axes[1].set_xlabel("Discharge Cycle Index")
+    axes[1].set_ylabel("RUL")
+    axes[1].legend()
+    plt.tight_layout()
+    st.pyplot(fig)
+
+    experiment_options = list_experiment_dirs()
+    if experiment_options:
+        selected_experiment = st.selectbox("Experiment diagnostics", experiment_options, format_func=lambda path: path.name)
+        try:
+            metrics = load_experiment_metrics(selected_experiment)
+            config = load_experiment_config(selected_experiment)
+        except OSError as error:
+            st.error(f"Could not load diagnostics for {selected_experiment.name}: {error}")
+            return
+        st.caption(
+            f"Selected model: {config['model_name']} | "
+            f"Test MAE: {metrics['test']['overall']['mae']:.2f} cycles | "
+            f"Test RMSE: {metrics['test']['overall']['rmse']:.2f} cycles | "
+            f"Test R2: {metrics['test']['overall'].get('r2', 0.0):.3f}"
+        )
+
+        plot_dir = selected_experiment / "plots"
+        first_column, second_column = st.columns(2)
+        with first_column:
+            for plot_name in ["predicted_vs_actual_scatter.png", "predicted_vs_actual_vs_cycle.png"]:
+                plot_path = plot_dir / plot_name
+                if plot_path.exists():
+                    st.image(str(plot_path))
+        with second_column:
+            for plot_name in ["residual_histogram.png", "loss_curve.png", "feature_importance.png"]:
+                plot_path = plot_dir / plot_name
+                if plot_path.exists():
+                    st.image(str(plot_path))
+
+
+def main() -> None:
+    st.set_page_config(page_title="Battery RUL Dashboard", layout="wide")
+    st.sidebar.title("Battery RUL")
+    page = st.sidebar.radio(
+        "Pages",
+        ["Model Comparison", "Prediction Page", "Training Page", "Visualization Page"],
+    )
+
+    if page == "Model Comparison":
+        render_model_comparison()
+    elif page == "Prediction Page":
+        render_prediction_page()
+    elif page == "Training Page":
+        render_training_page()
+    else:
+        render_visualization_page()
+
+
+if __name__ == "__main__":
+    main()
