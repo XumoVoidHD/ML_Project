@@ -102,6 +102,28 @@ The model input features can be explained in a simple teacher-friendly way:
 - `voltage_at_600s`: voltage value around 600 seconds during discharge. This is another engineered voltage-curve summary that captures later discharge behavior.
 - `discharge_cycle_index`: the count of discharge cycles seen so far for that battery. This is generated in our pipeline. It signifies how far along the battery is in its life.
 
+### Why these features matter to the model
+
+These features were chosen because they describe battery health from different viewpoints:
+
+- `Capacity` gives the most direct signal of how much useful charge is still available.
+- `capacity_fade` tells the model how much life has already been lost compared with the beginning.
+- `capacity_derivative` tells the model whether degradation is happening slowly or suddenly.
+- `Re` and `Rct` help the model capture internal electrochemical degradation that may not be visible from capacity alone.
+- `discharge_duration` helps show whether the battery can still sustain discharge for long periods.
+- `avg_temperature` helps the model capture thermal stress and abnormal battery behavior.
+- `voltage_at_100s`, `voltage_at_300s`, and `voltage_at_600s` summarize the shape of the discharge curve instead of using only one scalar value.
+- `discharge_cycle_index` gives the model life-progress context, which is useful because the same capacity value can mean different things at early and late stages.
+
+So overall, the feature set combines:
+
+- direct health information
+- degradation trend information
+- internal resistance information
+- thermal information
+- voltage-curve information
+- life-stage information
+
 ### Which features are directly available and which ones we made
 
 #### Directly available or directly measured values
@@ -378,6 +400,20 @@ Purpose:
 - check whether a basic linear relationship is enough
 - give a simple baseline for comparison
 
+How it uses the features:
+
+- it takes one discharge-cycle feature row at a time
+- it assumes the relationship between each input feature and RUL is mostly linear
+- it combines all features using a weighted sum to predict RUL
+
+In simple words:
+
+- if `Capacity` goes down, RUL usually goes down
+- if `Re` or `Rct` goes up, RUL usually goes down
+- if `discharge_duration` is longer, RUL may be higher
+
+This model is easy to explain, but it cannot capture strong nonlinear behavior very well.
+
 ### 2. Ridge Regression
 
 This is linear regression with regularization.
@@ -386,6 +422,20 @@ Purpose:
 
 - reduce instability
 - improve generalization compared with plain linear regression
+
+How it uses the features:
+
+- it uses the same input features as linear regression
+- it also learns a weighted linear combination of those features
+- but it adds a penalty so that no single feature weight becomes unrealistically large
+
+Why this helps:
+
+- battery data is small and noisy
+- regularization makes the model more stable
+- it usually generalizes better to an unseen battery
+
+In this project, Ridge is strong because it keeps the model simple while still using all important battery-health features.
 
 ### 3. Random Forest Regressor
 
@@ -396,6 +446,22 @@ Purpose:
 - capture nonlinear relationships
 - remain relatively robust on small tabular datasets
 
+How it uses the features:
+
+- it takes one discharge-cycle feature row at a time
+- it builds many decision trees
+- each tree learns rules such as:
+  - if `Capacity` is low and `Rct` is high, RUL is likely low
+  - if `capacity_fade` is still small, RUL is likely higher
+
+Why this is useful:
+
+- it can model nonlinear behavior better than linear methods
+- it can capture interactions between features
+- for example, temperature and resistance together may indicate stronger degradation than either feature alone
+
+Random Forest is often a good middle ground between interpretability and nonlinear learning power.
+
 ### 4. XGBoost Regressor
 
 This is a boosted tree model.
@@ -404,6 +470,20 @@ Purpose:
 
 - strong performance on tabular data
 - good at learning nonlinear feature interactions
+
+How it uses the features:
+
+- it also takes one discharge-cycle feature row at a time
+- instead of building independent trees like Random Forest, it builds trees sequentially
+- each new tree focuses on correcting the mistakes made by previous trees
+
+Why this helps:
+
+- it usually fits tabular battery-health features very well
+- it can learn subtle interactions between `Capacity`, `capacity_fade`, resistance, temperature, voltage points, and cycle index
+- it often gives strong performance even when the dataset is not very large
+
+In this project, XGBoost works well because the input is structured tabular data with meaningful engineered features.
 
 ### 5. LSTM
 
@@ -414,6 +494,30 @@ Purpose:
 - use several recent discharge cycles together
 - learn temporal degradation patterns
 
+How it uses the features:
+
+- instead of looking at only one discharge cycle, it looks at a sequence of recent discharge cycles
+- each cycle in the sequence contains the full feature vector:
+  - `Capacity`
+  - `capacity_fade`
+  - `capacity_derivative`
+  - `Re`
+  - `Rct`
+  - `discharge_duration`
+  - `avg_temperature`
+  - `voltage_at_100s`
+  - `voltage_at_300s`
+  - `voltage_at_600s`
+  - `discharge_cycle_index`
+- the LSTM processes these cycle-by-cycle and tries to remember how the battery trend is evolving over time
+
+Why this is useful:
+
+- battery degradation is naturally a time-dependent process
+- two batteries with similar current capacity may still have different future RUL if their recent degradation trends are different
+
+So LSTM is useful when recent history matters, not just the current snapshot.
+
 ### 6. GRU
 
 This is another recurrent sequence model, lighter than LSTM.
@@ -421,6 +525,32 @@ This is another recurrent sequence model, lighter than LSTM.
 Purpose:
 
 - capture temporal information with fewer parameters
+
+How it uses the features:
+
+- it uses the same sequence-style input as LSTM
+- each input step is one discharge-cycle feature vector
+- it learns temporal degradation patterns across consecutive cycles
+
+Why GRU is different from LSTM:
+
+- it has a simpler internal structure
+- it usually trains faster
+- it can work well when we want sequence modeling with fewer parameters
+
+In simple words, GRU tries to do the same job as LSTM but in a lighter and sometimes more efficient way.
+
+### Common understanding of feature usage across models
+
+The models in this project use the features in two main ways:
+
+- **Tabular models**: Linear Regression, Ridge Regression, Random Forest, and XGBoost use one discharge-cycle feature row at a time.
+- **Sequence models**: LSTM and GRU use multiple consecutive discharge-cycle rows together as a short history window.
+
+This means:
+
+- tabular models learn from the current battery snapshot
+- sequence models learn from both the current snapshot and the recent trend
 
 ---
 
