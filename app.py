@@ -220,8 +220,13 @@ def load_row_model(experiment_dir: Path, model_name: str) -> Any:
     raise ValueError(f"Unsupported row model: {model_name}")
 
 
-def render_row_model_prediction(full_frame: pd.DataFrame, scaler_payload: dict[str, Any]) -> None:
-    st.subheader("Tabular Model Manual Feature Input")
+def render_row_model_prediction(
+    full_frame: pd.DataFrame,
+    scaler_payload: dict[str, Any],
+    selected_experiment: Path,
+    config: dict[str, Any],
+) -> None:
+    st.subheader("Tabular Model Prediction")
     st.caption(
         "This is a what-if tool for the row-based models. You enter one engineered discharge-cycle snapshot and the app returns "
         "the predicted RUL, health category, maintenance advice, explainability summary, and a future trend forecast."
@@ -238,17 +243,6 @@ def render_row_model_prediction(full_frame: pd.DataFrame, scaler_payload: dict[s
     inputs = {}
     for column in feature_columns:
         inputs[column] = st.number_input(column, value=float(defaults[column]))
-
-    experiment_options = [path for path in list_experiment_dirs() if path.name.startswith(("xgboost_", "linear_", "ridge_", "random_forest_"))]
-    if not experiment_options:
-        st.info("Train at least one row-based model to enable manual predictions.")
-        return
-    selected_experiment = st.selectbox("Tabular experiment", experiment_options, format_func=lambda path: path.name)
-    try:
-        config = load_experiment_config(selected_experiment)
-    except OSError as error:
-        st.error(f"Could not load experiment metadata for {selected_experiment.name}: {error}")
-        return
 
     if st.button("Predict Tabular RUL"):
         model = load_row_model(selected_experiment, config["model_name"])
@@ -304,61 +298,186 @@ def load_sequence_model(experiment_dir: Path) -> tuple[torch.nn.Module, dict[str
     return model, checkpoint
 
 
-def render_sequence_prediction(full_frame: pd.DataFrame) -> None:
-    st.subheader("LSTM / GRU Sequence Prediction")
-    st.caption("This uses the latest N cycles from one battery and asks the sequence model to predict the remaining life from that recent trajectory.")
-    sequence_experiments = [path for path in list_experiment_dirs() if path.name.startswith(("lstm_", "gru_"))]
-    if not sequence_experiments:
-        st.info("Train an LSTM or GRU experiment to enable sequence predictions.")
-        return
+def normalize_sequence_input_frame(
+    sequence_frame: pd.DataFrame,
+    feature_columns: list[str],
+    scaler_payload: dict[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    normalized = sequence_frame.copy()
+    raw_feature_map = {column: f"raw_{column}" for column in feature_columns}
 
-    selected_experiment = st.selectbox("Sequence experiment", sequence_experiments, format_func=lambda path: path.name)
-    try:
-        config = load_experiment_config(selected_experiment)
-    except OSError as error:
-        st.error(f"Could not load experiment metadata for {selected_experiment.name}: {error}")
-        return
+    for feature_name, raw_name in raw_feature_map.items():
+        if raw_name in normalized.columns and feature_name not in normalized.columns:
+            normalized[feature_name] = pd.to_numeric(normalized[raw_name], errors="coerce")
+        elif feature_name in normalized.columns:
+            normalized[feature_name] = pd.to_numeric(normalized[feature_name], errors="coerce")
+            normalized[raw_name] = normalized[feature_name]
+        else:
+            raise ValueError(
+                f"Sequence CSV is missing required column `{raw_name}` or `{feature_name}`."
+            )
+
+    if "raw_discharge_cycle_index" in normalized.columns and "discharge_cycle_index" not in normalized.columns:
+        normalized["discharge_cycle_index"] = pd.to_numeric(normalized["raw_discharge_cycle_index"], errors="coerce")
+    else:
+        normalized["discharge_cycle_index"] = pd.to_numeric(normalized["discharge_cycle_index"], errors="coerce")
+        normalized["raw_discharge_cycle_index"] = normalized["discharge_cycle_index"]
+
+    if "RUL" in normalized.columns:
+        normalized["RUL"] = pd.to_numeric(normalized["RUL"], errors="coerce")
+
+    ordered_frame = normalized.sort_values("discharge_cycle_index").reset_index(drop=True)
+    raw_display_columns = [f"raw_{column}" for column in feature_columns]
+    display_columns = [column for column in raw_display_columns + ["RUL"] if column in ordered_frame.columns]
+    display_frame = ordered_frame.loc[:, display_columns].copy()
+    display_frame = display_frame.rename(
+        columns={
+            "raw_Capacity": "Capacity",
+            "raw_capacity_fade": "capacity_fade",
+            "raw_capacity_derivative": "capacity_derivative",
+            "raw_Re": "Re",
+            "raw_Rct": "Rct",
+            "raw_discharge_duration": "discharge_duration",
+            "raw_avg_temperature": "avg_temperature",
+            "raw_voltage_at_100s": "voltage_at_100s",
+            "raw_voltage_at_300s": "voltage_at_300s",
+            "raw_voltage_at_600s": "voltage_at_600s",
+            "raw_discharge_cycle_index": "discharge_cycle_index",
+        }
+    )
+    display_frame.insert(0, "discharge_cycle_index", ordered_frame["discharge_cycle_index"].to_numpy())
+
+    feature_frame = ordered_frame[feature_columns].fillna(scaler_payload["train_impute_values"])
+    scaled_values = scaler_payload["scaler"].transform(feature_frame)
+    scaled_frame = pd.DataFrame(scaled_values, columns=feature_columns)
+    scaled_frame["discharge_cycle_index"] = ordered_frame["discharge_cycle_index"].to_numpy()
+    if "RUL" in ordered_frame.columns:
+        scaled_frame["RUL"] = ordered_frame["RUL"].to_numpy()
+    return scaled_frame, display_frame
+
+
+def render_sequence_prediction(
+    full_frame: pd.DataFrame,
+    selected_experiment: Path,
+    config: dict[str, Any],
+    scaler_payload: dict[str, Any],
+) -> None:
+    st.subheader("Sequence Model Prediction")
+    st.caption(
+        "Sequence models work differently from tabular models. Instead of one manual cycle snapshot, they use a recent window of "
+        "consecutive cycles from a chosen battery and predict RUL from that trajectory."
+    )
     sequence_length = int(config["hyperparameters"]["sequence_length"])
     model, checkpoint = load_sequence_model(selected_experiment)
+    input_mode = st.radio("Sequence input source", ["Existing battery data", "CSV sequence"], horizontal=True)
 
-    battery_options = sorted(full_frame["battery_id"].dropna().unique().tolist())
-    selected_battery = st.selectbox("Battery", battery_options)
+    if input_mode == "Existing battery data":
+        battery_options = sorted(full_frame["battery_id"].dropna().unique().tolist())
+        selected_battery = st.selectbox("Battery", battery_options)
 
-    if st.button("Predict Sequence RUL"):
-        features, sequence_frame = get_latest_sequence_for_battery(
-            full_frame,
-            selected_battery,
-            checkpoint["feature_columns"],
-            sequence_length,
-        )
+        if st.button("Predict Sequence RUL"):
+            features, sequence_frame = get_latest_sequence_for_battery(
+                full_frame,
+                selected_battery,
+                checkpoint["feature_columns"],
+                sequence_length,
+            )
+            with torch.no_grad():
+                prediction = model(torch.tensor(features).unsqueeze(0)).item()
+            assessment = assess_prediction(float(prediction))
+            render_prediction_assessment(
+                predicted_rul=float(prediction),
+                cycle_index=float(sequence_frame["discharge_cycle_index"].iloc[-1]),
+                status=assessment.health_status,
+                recommendation=assessment.recommendation,
+            )
+            if sequence_frame["RUL"].isna().all():
+                st.caption("This battery is censored in the dataset, so ground-truth RUL is not available for comparison.")
+            st.dataframe(
+                sequence_frame[["battery_id", "discharge_cycle_index", "raw_Capacity", "RUL"]].tail(sequence_length),
+                use_container_width=True,
+            )
+        return
+
+    st.caption(
+        f"The selected model expects a sequence length of {sequence_length}. The app will take the last {sequence_length} rows from the CSV."
+    )
+    demo_csv_path = PROCESSED_DIR / "demo_sequence_B0018_last20.csv"
+    use_demo_csv = st.checkbox("Use bundled demo CSV from B0018 test data", value=True)
+    uploaded_csv = None if use_demo_csv else st.file_uploader("Upload sequence CSV", type=["csv"])
+
+    if st.button("Predict Sequence RUL from CSV"):
+        try:
+            if use_demo_csv:
+                sequence_input_frame = pd.read_csv(demo_csv_path)
+                source_name = demo_csv_path.name
+            elif uploaded_csv is not None:
+                sequence_input_frame = pd.read_csv(uploaded_csv)
+                source_name = uploaded_csv.name
+            else:
+                st.error("Please upload a CSV file or use the bundled demo CSV.")
+                return
+
+            scaled_frame, display_frame = normalize_sequence_input_frame(
+                sequence_input_frame,
+                checkpoint["feature_columns"],
+                scaler_payload,
+            )
+        except (OSError, ValueError, pd.errors.ParserError) as error:
+            st.error(f"Could not read sequence CSV: {error}")
+            return
+
+        if len(scaled_frame) < sequence_length:
+            st.error(
+                f"The CSV has only {len(scaled_frame)} rows, but the model needs at least {sequence_length} consecutive rows."
+            )
+            return
+
+        scaled_window = scaled_frame.tail(sequence_length).copy()
+        display_window = display_frame.tail(sequence_length).copy()
         with torch.no_grad():
-            prediction = model(torch.tensor(features).unsqueeze(0)).item()
+            prediction = model(torch.tensor(scaled_window[checkpoint["feature_columns"]].to_numpy(dtype="float32")).unsqueeze(0)).item()
         assessment = assess_prediction(float(prediction))
         render_prediction_assessment(
             predicted_rul=float(prediction),
-            cycle_index=float(sequence_frame["discharge_cycle_index"].iloc[-1]),
+            cycle_index=float(scaled_window["discharge_cycle_index"].iloc[-1]),
             status=assessment.health_status,
             recommendation=assessment.recommendation,
         )
-        if sequence_frame["RUL"].isna().all():
-            st.caption("This battery is censored in the dataset, so ground-truth RUL is not available for comparison.")
-        st.dataframe(
-            sequence_frame[["battery_id", "discharge_cycle_index", "raw_Capacity", "RUL"]].tail(sequence_length),
-            use_container_width=True,
-        )
+        st.caption(f"Sequence source: `{source_name}`")
+        if "RUL" in scaled_window.columns and pd.notna(scaled_window["RUL"].iloc[-1]):
+            actual_rul = float(scaled_window["RUL"].iloc[-1])
+            st.info(f"Known ground-truth RUL of the last row: {actual_rul:.2f} cycles")
+        else:
+            st.caption("This CSV does not include a known RUL for the last row.")
+        st.dataframe(display_window, use_container_width=True)
 
 
 def render_prediction_page() -> None:
     st.header("Prediction Page")
     st.info(
-        "This page is for model probing, not live deployment. The tabular section tests row-based models on a single engineered cycle. "
-        "The sequence section tests recurrent models on a recent cycle window from one battery."
+        "Choose a saved experiment first. The page will then show only the inputs needed for that model type."
     )
     full_frame = load_processed_full()
     scaler_payload = load_scaler_payload()
-    render_row_model_prediction(full_frame, scaler_payload)
-    st.divider()
-    render_sequence_prediction(full_frame)
+    experiment_options = list_experiment_dirs()
+    if not experiment_options:
+        st.info("No trained experiments found yet. Train a model from the Training page first.")
+        return
+
+    selected_experiment = st.selectbox("Experiment", experiment_options, format_func=lambda path: path.name)
+    try:
+        config = load_experiment_config(selected_experiment)
+    except OSError as error:
+        st.error(f"Could not load experiment metadata for {selected_experiment.name}: {error}")
+        return
+
+    st.caption(f"Selected model: {config['model_name']}")
+
+    if config["model_name"] in {"xgboost", "linear", "ridge", "random_forest"}:
+        render_row_model_prediction(full_frame, scaler_payload, selected_experiment, config)
+    else:
+        render_sequence_prediction(full_frame, selected_experiment, config, scaler_payload)
 
 
 def render_training_page() -> None:
