@@ -1,0 +1,68 @@
+Use the Tabular Model Manual Feature Input page and select xgboost_20260409_214512. These examples are from B0018, which is your unseen test battery, so they make a strong demo.
+
+Type the raw values exactly into the input boxes:
+
+Example 1
+
+Capacity = 1.7075021373272627
+capacity_fade = 0.07951591589702178
+capacity_derivative = -0.003967819740948286
+Re = 0.0610647915313547
+Rct = 0.088484820718071
+discharge_duration = 3283.797
+avg_temperature = 30.125011009636175
+voltage_at_100s = 3.9100070812207535
+voltage_at_300s = 3.8247671810959005
+voltage_at_600s = 3.73820077821172
+discharge_cycle_index = 24
+Known actual RUL = 73
+Saved XGBoost prediction = 73.056244
+
+Example 2
+
+Capacity = 1.7462197416415093
+capacity_fade = 0.058643942874694543
+capacity_derivative = -0.007410738550203133
+Re = 0.0606490457336047
+Rct = 0.0875492997393303
+discharge_duration = 3327.641
+avg_temperature = 30.586452588663985
+voltage_at_100s = 3.91393841529744
+voltage_at_300s = 3.830609130916006
+voltage_at_600s = 3.7461797112514583
+discharge_cycle_index = 19
+Known actual RUL = 78
+Saved XGBoost prediction = 78.755684
+
+Example 3
+
+Capacity = 1.5954638693695655
+capacity_fade = 0.1399137568197586
+capacity_derivative = -0.015438968455372182
+Re = 0.0618017944104421
+Rct = 0.0851627893757878
+discharge_duration = 3181.625
+avg_temperature = 30.38386825126278
+voltage_at_100s = 3.9014288149364975
+voltage_at_300s = 3.8114244574112126
+voltage_at_600s = 3.717373719287011
+discharge_cycle_index = 45
+Known actual RUL = 52
+Saved XGBoost prediction = 53.115883
+
+Backup example
+If you want one more, still with xgboost_20260409_214512:
+
+Capacity = 1.8550045207910817
+capacity_fade = 0.0
+capacity_derivative = 0.0
+Re = 0.0651581515845521
+Rct = 0.09555369570022
+discharge_duration = 3434.891
+avg_temperature = 31.773285281389256
+voltage_at_100s = 3.898054328072087
+voltage_at_300s = 3.815146435974368
+voltage_at_600s = 3.738083680832891
+discharge_cycle_index = 1
+Known actual RUL = 96
+Saved XGBoost prediction = 88.32323
