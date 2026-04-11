@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 import torch
 
-from models.baseline_models import LinearRULModel, RandomForestRULModel, RidgeRULModel
+from models.baseline_models import LinearRULModel, MLPRULModel, RandomForestRULModel, RidgeRULModel, SVRRULModel
 from models.gru_model import BatteryGRURegressor
 from models.lstm_model import BatteryLSTMRegressor
 from models.xgboost_model import XGBoostRULModel
@@ -81,6 +81,8 @@ def is_complete_experiment_dir(experiment_dir: Path) -> bool:
         "linear": "model.pkl",
         "ridge": "model.pkl",
         "random_forest": "model.pkl",
+        "svr": "model.pkl",
+        "mlp": "model.pkl",
         "lstm": "model.pt",
         "gru": "model.pt",
     }.get(model_name)
@@ -217,6 +219,10 @@ def load_row_model(experiment_dir: Path, model_name: str) -> Any:
         return RidgeRULModel.load(model_path)
     if model_name == "random_forest":
         return RandomForestRULModel.load(model_path)
+    if model_name == "svr":
+        return SVRRULModel.load(model_path)
+    if model_name == "mlp":
+        return MLPRULModel.load(model_path)
     raise ValueError(f"Unsupported row model: {model_name}")
 
 
@@ -474,7 +480,7 @@ def render_prediction_page() -> None:
 
     st.caption(f"Selected model: {config['model_name']}")
 
-    if config["model_name"] in {"xgboost", "linear", "ridge", "random_forest"}:
+    if config["model_name"] in {"xgboost", "linear", "ridge", "random_forest", "svr", "mlp"}:
         render_row_model_prediction(full_frame, scaler_payload, selected_experiment, config)
     else:
         render_sequence_prediction(full_frame, selected_experiment, config, scaler_payload)
@@ -482,7 +488,7 @@ def render_prediction_page() -> None:
 
 def render_training_page() -> None:
     st.header("Training Page")
-    model_name = st.selectbox("Model", ["xgboost", "linear", "ridge", "random_forest", "lstm", "gru"])
+    model_name = st.selectbox("Model", ["xgboost", "linear", "ridge", "random_forest", "svr", "mlp", "lstm", "gru"])
     seed = st.number_input("Seed", min_value=0, value=42, step=1)
     command = [sys.executable, "train.py", "--model", model_name, "--seed", str(seed)]
 
@@ -528,6 +534,38 @@ def render_training_page() -> None:
                 "--rf_n_estimators", str(int(rf_n_estimators)),
                 "--rf_max_depth", str(int(rf_max_depth)),
                 "--rf_min_samples_leaf", str(int(rf_min_samples_leaf)),
+            ]
+        )
+    elif model_name == "svr":
+        col1, col2 = st.columns(2)
+        with col1:
+            svr_c = st.number_input("C", min_value=0.1, value=10.0, step=0.5, format="%.2f")
+            svr_epsilon = st.number_input("epsilon", min_value=0.001, value=0.1, step=0.01, format="%.3f")
+        with col2:
+            svr_kernel = st.selectbox("kernel", ["rbf", "linear", "poly", "sigmoid"])
+            svr_gamma = st.selectbox("gamma", ["scale", "auto"])
+        command.extend(
+            [
+                "--svr_c", str(float(svr_c)),
+                "--svr_epsilon", str(float(svr_epsilon)),
+                "--svr_kernel", str(svr_kernel),
+                "--svr_gamma", str(svr_gamma),
+            ]
+        )
+    elif model_name == "mlp":
+        col1, col2 = st.columns(2)
+        with col1:
+            mlp_hidden_dim = st.number_input("hidden_dim", min_value=4, value=64, step=4)
+            mlp_alpha = st.number_input("alpha", min_value=0.0, value=0.0001, step=0.0001, format="%.4f")
+        with col2:
+            mlp_learning_rate_init = st.number_input("learning_rate_init", min_value=0.0001, value=0.001, step=0.0005, format="%.4f")
+            mlp_max_iter = st.number_input("max_iter", min_value=50, value=500, step=50)
+        command.extend(
+            [
+                "--mlp_hidden_dim", str(int(mlp_hidden_dim)),
+                "--mlp_alpha", str(float(mlp_alpha)),
+                "--mlp_learning_rate_init", str(float(mlp_learning_rate_init)),
+                "--mlp_max_iter", str(int(mlp_max_iter)),
             ]
         )
     else:

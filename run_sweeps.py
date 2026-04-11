@@ -56,7 +56,39 @@ MODEL_GRIDS: dict[str, dict[str, list[Any]]] = {
     },
 }
 
+FOCUSED_MODEL_GRIDS: dict[str, dict[str, list[Any]]] = {
+    "xgboost": {
+        "n_estimators": [800, 1000, 600],
+        "learning_rate": [0.02, 0.03, 0.015],
+        "max_depth": [3, 4, 2],
+        "min_child_weight": [2.0, 3.0, 1.0],
+        "subsample": [0.9, 0.85, 1.0],
+        "colsample_bytree": [0.8, 0.9, 0.7],
+        "reg_alpha": [0.1, 0.2, 0.0],
+        "reg_lambda": [5.0, 7.0, 3.0],
+    },
+    "random_forest": {
+        "rf_n_estimators": [600, 800, 400],
+        "rf_max_depth": [8, 10, 6, 12],
+        "rf_min_samples_leaf": [6, 5, 4, 8],
+    },
+    "ridge": {
+        "ridge_alpha": [50.0, 40.0, 60.0, 25.0, 75.0, 100.0],
+    },
+    "lstm": {
+        "sequence_length": [5, 4, 6],
+        "batch_size": [8, 12],
+        "learning_rate": [0.0005, 0.0003, 0.0007],
+        "max_epochs": [200, 300],
+        "patience": [20, 30],
+        "hidden_dim": [32, 24, 40],
+        "num_layers": [1],
+        "dropout": [0.3, 0.25, 0.35],
+    },
+}
+
 PRESET_MODELS: dict[str, list[str]] = {
+    "focused": ["ridge", "random_forest", "xgboost", "lstm"],
     "optimized": ["linear", "ridge", "random_forest", "xgboost", "lstm", "gru"],
     "recommended": ["random_forest", "xgboost", "ridge"],
     "tabular": ["linear", "ridge", "random_forest", "xgboost"],
@@ -135,7 +167,8 @@ def run_sweeps(args: argparse.Namespace) -> int:
     failures = 0
 
     for model_name in models:
-        model_grid = {**COMMON_GRID, **MODEL_GRIDS[model_name]}
+        base_grid = FOCUSED_MODEL_GRIDS.get(model_name, MODEL_GRIDS[model_name]) if args.preset == "focused" and not args.models else MODEL_GRIDS[model_name]
+        model_grid = {**COMMON_GRID, **base_grid}
         combinations = iter_grid(model_grid)
         selected_combinations = combinations[args.start_index : args.start_index + args.max_runs_per_model]
         print(f"\n[{model_name}] {len(selected_combinations)} run(s) selected from {len(combinations)} combinations")

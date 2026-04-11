@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from models.gru_model import BatteryGRURegressor
 from models.lstm_model import BatteryLSTMRegressor
-from models.baseline_models import LinearRULModel, RandomForestRULModel, RidgeRULModel
+from models.baseline_models import LinearRULModel, MLPRULModel, RandomForestRULModel, RidgeRULModel, SVRRULModel
 from models.xgboost_model import XGBoostRULModel
 from preprocessing.dataset import BatterySequenceDataset, load_feature_columns, load_processed_split
 from training.evaluate import compute_metrics, compute_per_battery_metrics, save_all_plots, save_metrics, save_predictions
@@ -50,6 +50,14 @@ class TrainingConfig:
     rf_n_estimators: int = 300
     rf_max_depth: int = 0
     rf_min_samples_leaf: int = 1
+    svr_c: float = 10.0
+    svr_epsilon: float = 0.1
+    svr_kernel: str = "rbf"
+    svr_gamma: str = "scale"
+    mlp_hidden_dim: int = 64
+    mlp_alpha: float = 1e-4
+    mlp_learning_rate_init: float = 1e-3
+    mlp_max_iter: int = 500
 
 
 def set_seed(seed: int) -> None:
@@ -292,10 +300,28 @@ def train_sklearn_row_model(config: TrainingConfig) -> dict[str, Any]:
             max_depth=max_depth,
             min_samples_leaf=config.rf_min_samples_leaf,
         )
+    elif config.model_name == "svr":
+        model = SVRRULModel(
+            c=config.svr_c,
+            epsilon=config.svr_epsilon,
+            kernel=config.svr_kernel,
+            gamma=config.svr_gamma,
+        )
+    elif config.model_name == "mlp":
+        model = MLPRULModel(
+            seed=config.seed,
+            hidden_dim=config.mlp_hidden_dim,
+            alpha=config.mlp_alpha,
+            learning_rate_init=config.mlp_learning_rate_init,
+            max_iter=config.mlp_max_iter,
+        )
     else:
         raise ValueError(f"Unsupported row model: {config.model_name}")
 
-    model.fit(x_train, y_train)
+    if config.model_name == "svr":
+        model.fit(x_train, y_train, x_val, val_frame["RUL"].to_numpy(dtype=float))
+    else:
+        model.fit(x_train, y_train)
     val_predictions = build_row_prediction_frame(val_frame, model.predict(x_val))
     test_predictions = build_row_prediction_frame(test_frame, model.predict(x_test))
     return {
@@ -313,7 +339,7 @@ def save_model_artifact(model_name: str, model: Any, output_dir: Path, feature_c
         model.save(model_path)
         return model_path.name
 
-    if model_name in {"linear", "ridge", "random_forest"}:
+    if model_name in {"linear", "ridge", "random_forest", "svr", "mlp"}:
         model_path = output_dir / "model.pkl"
         model.save(model_path)
         return model_path.name
@@ -383,6 +409,25 @@ def save_config(output_dir: Path, config: TrainingConfig, feature_columns: list[
                 "min_samples_leaf": config.rf_min_samples_leaf,
             }
         )
+    elif config.model_name == "svr":
+        hyperparameters.update(
+            {
+                "C": config.svr_c,
+                "epsilon": config.svr_epsilon,
+                "kernel": config.svr_kernel,
+                "gamma": config.svr_gamma,
+                "posthoc_calibration": "linear regression fitted on validation predictions",
+            }
+        )
+    elif config.model_name == "mlp":
+        hyperparameters.update(
+            {
+                "hidden_dim": config.mlp_hidden_dim,
+                "alpha": config.mlp_alpha,
+                "learning_rate_init": config.mlp_learning_rate_init,
+                "max_iter": config.mlp_max_iter,
+            }
+        )
     else:
         hyperparameters.update(
             {
@@ -427,9 +472,12 @@ def train_experiment(config: TrainingConfig) -> Path:
     if config.model_name == "xgboost":
         results = train_xgboost_model(config)
         feature_importance = (results["feature_columns"], results["model"].feature_importances_)
-    elif config.model_name in {"linear", "ridge", "random_forest"}:
+    elif config.model_name in {"linear", "ridge", "random_forest", "svr", "mlp"}:
         results = train_sklearn_row_model(config)
-        feature_importance = (results["feature_columns"], results["model"].feature_importances_)
+        if hasattr(results["model"], "feature_importances_"):
+            feature_importance = (results["feature_columns"], results["model"].feature_importances_)
+        else:
+            feature_importance = None
     elif config.model_name in {"lstm", "gru"}:
         results = train_torch_sequence_model(config)
         feature_importance = None
