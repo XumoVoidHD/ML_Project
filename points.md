@@ -194,6 +194,16 @@ You should present the models as a progression.
 - GRU is lighter and sometimes more efficient than LSTM.
 - I wanted to compare whether a simpler recurrent architecture could work better.
 
+### 7. SVR
+
+- I also tried SVR as a nonlinear tabular baseline.
+- The reason was to test whether a kernel-based model could capture nonlinear behavior without using a deep sequence model.
+
+### 8. MLP
+
+- I also tried an MLP as a neural-network baseline on the engineered tabular features.
+- This helped me compare classical ML models, tabular neural models, and sequence models in one pipeline.
+
 A clean line:
 
 - "I deliberately compared both classical tabular models and sequence models, because I wanted to test whether explicit feature engineering or temporal modeling was more effective for this dataset."
@@ -225,7 +235,7 @@ How to explain which one matters most:
 
 This is the most important part for your ML presentation.
 
-From your recorded runs:
+From the current recorded runs:
 
 - Best XGBoost run:
 - Test MAE about `10.90`
@@ -247,16 +257,17 @@ From your recorded runs:
 - Best test RMSE about `13.57`
 - Test R2 about `0.744`
 
+- SVR and MLP were weaker baselines in the current setup.
 - GRU performed much worse on the test battery in current runs.
 
 ## How To Interpret These Results
 
 Say this carefully, because it sounds mature:
 
-- The strongest and most reliable models in my project are Ridge, XGBoost, and Random Forest.
+- The strongest and most reliable models in my project are XGBoost, Ridge, and Random Forest, with a tuned LSTM becoming competitive.
 - XGBoost is the most consistently strong nonlinear tabular model.
 - Ridge is surprisingly competitive, which suggests that the engineered features capture a lot of the underlying degradation information.
-- LSTM showed that sequence modeling can help in some settings, but in my project it was not consistently better than the best tabular models.
+- LSTM showed that sequence modeling can help when tuned properly, but it still was not clearly better than the best tabular models overall.
 - GRU did not generalize well on the unseen battery in the current setup.
 
 Best conclusion line:
@@ -296,6 +307,11 @@ Best conclusion line:
 - Similar reason: limited data and harder generalization.
 - The sequence patterns learned from training batteries may not transfer well to the test battery.
 - The current architecture and data size may not be enough for GRU to learn robust temporal behavior.
+
+### Why SVR and MLP were weaker
+
+- They were useful as extra baselines, but in the current setup they did not match the best Ridge, XGBoost, or tuned LSTM runs.
+- That suggests the feature set is strong, but not every nonlinear model benefits from it equally on this small dataset.
 
 A very strong line:
 
@@ -371,16 +387,16 @@ A line to say:
 
 Use something close to this:
 
-- "This project predicts lithium-ion battery remaining useful life using the NASA battery dataset. I defined RUL as the number of discharge cycles left before capacity drops below 1.4 Ah, engineered battery-health features from discharge and impedance information, and compared several models including linear, ridge, random forest, XGBoost, LSTM, and GRU. The main finding is that well-engineered tabular models, especially Ridge and XGBoost, generalized better than the more complex sequence models in my current setup. So the project shows that in battery RUL prediction, careful feature design and proper evaluation can be more important than model complexity alone."
+- "This project predicts lithium-ion battery remaining useful life using the NASA battery dataset. I defined RUL as the number of discharge cycles left before capacity drops below 1.4 Ah, engineered battery-health features from discharge and impedance information, and compared several models including linear, ridge, random forest, XGBoost, SVR, MLP, LSTM, and GRU. The main finding is that XGBoost and Ridge were the strongest overall models, and that a tuned LSTM also became competitive. So the project shows that in battery RUL prediction, careful feature design and proper evaluation are more important than model complexity alone."
 
 ## Very Short 1-Minute Version
 
 - My project predicts the remaining useful life of lithium-ion batteries using the NASA battery dataset.
 - I define RUL as the number of discharge cycles left before battery capacity falls below 1.4 Ah.
 - I used discharge cycles as supervised samples and engineered features such as capacity fade, degradation trend, resistance, temperature, voltage snapshots, and cycle index.
-- I compared classical ML models like linear regression, ridge, random forest, and XGBoost with sequence models like LSTM and GRU.
+- I compared classical ML models like linear regression, ridge, random forest, XGBoost, SVR, and MLP with sequence models like LSTM and GRU.
 - The most important part of the evaluation is that I tested on a completely unseen battery.
-- My results show that Ridge and XGBoost performed best overall, meaning that for this dataset, strong feature engineering and good tabular models worked better than more complex sequence models.
+- My results show that XGBoost and Ridge performed best overall, and that a tuned LSTM also became competitive, meaning that for this dataset, strong feature engineering and careful evaluation mattered more than simply choosing the most complex model.
 - This is useful for predictive maintenance in robotics, energy systems, and battery health monitoring.
 
 If you want, I can do the next step and turn this into either:

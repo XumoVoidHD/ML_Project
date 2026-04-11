@@ -2,7 +2,18 @@
 
 ## Project Overview
 
-This project predicts Remaining Useful Life (RUL) for lithium-ion batteries using the NASA Battery Dataset. The pipeline converts cycle-level metadata and per-cycle discharge time series into supervised discharge-cycle features, then compares a row-based XGBoost regressor against sequence models built with PyTorch.
+This project predicts Remaining Useful Life (RUL) for lithium-ion batteries using the NASA Battery Dataset. The pipeline converts cycle-level metadata and per-cycle discharge time series into supervised discharge-cycle features, then compares both row-based tabular regressors and sequence models built with PyTorch.
+
+The current model families in the codebase are:
+
+- Linear Regression
+- Ridge Regression
+- Random Forest
+- XGBoost
+- SVR
+- MLP
+- LSTM
+- GRU
 
 ## Dataset Explanation
 
@@ -27,7 +38,7 @@ The NASA battery dataset tracks repeated charge, discharge, and impedance cycles
 
 ### Why Only Discharge Cycles
 
-RUL is defined at the point where a battery’s usable discharge capacity falls below a threshold, so discharge cycles are the natural supervised unit. Charge and impedance cycles are still useful indirectly because impedance rows provide degradation indicators that can be forward-filled into later discharge rows.
+RUL is defined at the point where a battery's usable discharge capacity falls below a threshold, so discharge cycles are the natural supervised unit. Charge and impedance cycles are still useful indirectly because impedance rows provide degradation indicators that can be forward-filled into later discharge rows.
 
 ### Why This RUL Definition
 
@@ -50,9 +61,10 @@ The preprocessing pipeline avoids leakage in several ways:
 
 - Only discharge cycles are used as supervised samples.
 - `Re` and `Rct` are forward-filled only from prior impedance cycles in the same battery.
+- Missing feature values are imputed using training-set medians only.
 - No future cycle statistics are used.
 - No full-life aggregate features are used.
-- The scaler is fit only on training rows and then applied to validation and test rows.
+- The scaler is fit only on training rows and then applied to validation, test, and censored rows.
 - Sequence windows are built from consecutive cycles of the same battery only.
 
 ## Feature Engineering
@@ -68,6 +80,8 @@ Each supervised row represents one discharge cycle and includes:
 - `voltage_at_100s`, `voltage_at_300s`, `voltage_at_600s`
 - `discharge_cycle_index`
 
+The processed tables also keep raw unscaled copies of these features in `raw_*` columns for inspection and dashboard use.
+
 These features capture battery health from multiple physical perspectives:
 
 - Capacity fade reflects aging because the battery stores less charge relative to its early-life baseline.
@@ -77,33 +91,34 @@ These features capture battery health from multiple physical perspectives:
 
 ## Models
 
-### XGBoost
+### Tabular Models
 
-XGBoost treats each discharge cycle independently using the engineered row-level features. It is strong on small tabular datasets and provides direct feature importance for interpretability.
+- Linear Regression: simplest baseline for a direct linear relationship.
+- Ridge Regression: regularized linear model that often generalizes better on small noisy data.
+- Random Forest: tree ensemble for nonlinear interactions.
+- XGBoost: boosted tree model with strong tabular performance and feature importance.
+- SVR: nonlinear margin-based regressor with optional post-hoc calibration on the validation split.
+- MLP: feed-forward neural baseline for tabular features.
 
-### LSTM / BiLSTM
+### Sequence Models
 
-The LSTM implementation uses a bidirectional recurrent encoder over consecutive discharge cycles from the same battery. It models temporal context that a row-based method cannot observe directly.
+- LSTM: bidirectional recurrent encoder over consecutive discharge cycles from the same battery.
+- GRU: lighter recurrent alternative for temporal degradation patterns.
 
-### GRU
+### Why Sequence Models May Help
 
-The GRU is a lighter recurrent alternative that still captures sequential aging patterns and can train efficiently on limited data.
+Battery degradation is fundamentally temporal. Sequence models can use recent trajectory information, not just the current cycle snapshot, so they may capture degradation pace and trend changes more effectively than row-based methods.
 
-### Why Sequence Models Can Perform Better
+## Current Results Snapshot
 
-Battery degradation is fundamentally temporal. Sequence models can use recent trajectory information, not just the current cycle snapshot, so they often capture degradation pace and trend changes more effectively than row-based methods.
+Based on the current `experiments/summary.csv`, the strongest recorded runs by test MAE are:
 
-## Results
+- XGBoost: `xgboost_20260411_095234` with test MAE `10.90`, test RMSE `12.94`, test R2 `0.786`
+- Ridge: `ridge_20260409_214544` with test MAE `11.23`, test RMSE `12.26`, test R2 `0.808`
+- LSTM: `lstm_20260411_113957` with test MAE `11.28`, test RMSE `13.57`, test R2 `0.744`
+- Random Forest: `random_forest_20260411_113657` with test MAE `11.64`, test RMSE `13.97`, test R2 `0.751`
 
-After training, each run saves:
-
-- model artifact
-- `metrics.json`
-- `config.json`
-- `predictions.csv`
-- plots in `experiments/<model_name>_<timestamp>/plots/`
-
-`experiments/summary.csv` compares all recorded runs. The best model should be chosen by test MAE/RMSE together with qualitative plots such as predicted-vs-actual and residual distributions.
+`experiments/summary.csv` compares all recorded runs. The best model should be chosen by unseen-battery test performance together with qualitative plots such as predicted-vs-actual and residual distributions.
 
 ## How To Run
 
@@ -130,16 +145,16 @@ This generates:
 
 ### 3. Train Models
 
+Examples:
+
 ```bash
 python train.py --model xgboost
-python train.py --model lstm
-python train.py --model gru
-```
-
-You can also provide:
-
-```bash
-python train.py --model lstm --seed 42 --sequence_length 10
+python train.py --model ridge --ridge_alpha 50
+python train.py --model random_forest --rf_n_estimators 600 --rf_max_depth 8 --rf_min_samples_leaf 6
+python train.py --model lstm --sequence_length 5 --hidden_dim 32 --num_layers 1
+python train.py --model gru --sequence_length 8
+python train.py --model svr --svr_c 10 --svr_epsilon 0.1 --svr_kernel rbf
+python train.py --model mlp --mlp_hidden_dim 64
 ```
 
 To automatically populate multiple experiment runs from parameter grids:
@@ -147,7 +162,8 @@ To automatically populate multiple experiment runs from parameter grids:
 ```bash
 python run_sweeps.py --dry-run
 python run_sweeps.py --preset recommended --max-runs-per-model 6
-python run_sweeps.py --models xgboost random_forest --max-runs-per-model 10
+python run_sweeps.py --preset focused --max-runs-per-model 8
+python run_sweeps.py --models xgboost random_forest ridge lstm --max-runs-per-model 10
 ```
 
 ### 4. Launch Dashboard
@@ -158,32 +174,37 @@ streamlit run app.py
 
 The dashboard includes:
 
-- Model comparison
-- Manual XGBoost prediction
-- Sequence prediction for LSTM/GRU
+- Model comparison ranked by test MAE and test RMSE
+- Manual what-if prediction for row-based models
+- Sequence prediction from existing battery data or uploaded CSV
+- Local feature-influence summaries for row models
+- Simple future-trend forecasting for manual row inputs
 - Training trigger UI
-- Capacity, RUL, and feature-importance visualizations
+- Raw battery degradation plots and experiment diagnostics
 
 ## Project Structure
 
 ```text
 project/
-├── app.py
-├── data/
-├── experiments/
-├── models/
-│   ├── gru_model.py
-│   ├── lstm_model.py
-│   └── xgboost_model.py
-├── preprocessing/
-│   ├── dataset.py
-│   └── pipeline.py
-├── processed/
-├── training/
-│   ├── evaluate.py
-│   └── trainer.py
-├── train.py
-├── README.md
-├── requirements.txt
-└── .gitignore
+|-- app.py
+|-- prediction_insights.py
+|-- run_sweeps.py
+|-- train.py
+|-- data/
+|-- experiments/
+|-- models/
+|   |-- baseline_models.py
+|   |-- gru_model.py
+|   |-- lstm_model.py
+|   `-- xgboost_model.py
+|-- preprocessing/
+|   |-- dataset.py
+|   `-- pipeline.py
+|-- processed/
+|-- training/
+|   |-- evaluate.py
+|   `-- trainer.py
+|-- README.md
+|-- requirements.txt
+`-- .gitignore
 ```

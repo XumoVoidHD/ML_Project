@@ -373,7 +373,8 @@ Each experiment stores:
 The Streamlit dashboard is used to:
 
 - compare models
-- inspect predictions
+- inspect tabular and sequence predictions
+- generate simple what-if forecasts and local feature explanations for row models
 - view diagnostic plots
 - trigger training runs
 
@@ -540,11 +541,48 @@ Why GRU is different from LSTM:
 
 In simple words, GRU tries to do the same job as LSTM but in a lighter and sometimes more efficient way.
 
+### 7. SVR
+
+This is a support vector regression baseline.
+
+Purpose:
+
+- test a nonlinear kernel method on the engineered tabular features
+- compare margin-based regression with tree-based and linear models
+
+How it uses the features:
+
+- it takes one discharge-cycle feature row at a time
+- it maps the inputs into a nonlinear feature space through the chosen kernel
+- in this project, it can also apply a simple post-hoc calibration step using validation predictions
+
+Why this is useful:
+
+- it can model nonlinear relationships without building deep sequence models
+- it gives another reference point for how hard this dataset is
+
+### 8. MLP
+
+This is a feed-forward neural network baseline for tabular data.
+
+Purpose:
+
+- test whether a small neural network on engineered features can compete with classical tabular models
+
+How it uses the features:
+
+- it takes one discharge-cycle feature row at a time
+- it passes the feature vector through hidden layers with nonlinear activations
+
+Why this is useful:
+
+- it checks whether nonlinear learned combinations of the engineered features help, even without explicit sequence modeling
+
 ### Common understanding of feature usage across models
 
 The models in this project use the features in two main ways:
 
-- **Tabular models**: Linear Regression, Ridge Regression, Random Forest, and XGBoost use one discharge-cycle feature row at a time.
+- **Tabular models**: Linear Regression, Ridge Regression, Random Forest, XGBoost, SVR, and MLP use one discharge-cycle feature row at a time.
 - **Sequence models**: LSTM and GRU use multiple consecutive discharge-cycle rows together as a short history window.
 
 This means:
@@ -625,25 +663,27 @@ The results below are based on the current `experiments/summary.csv`.
 ### Best current run for each model
 
 
-| Model             | Best Experiment                 | Test MAE | Test RMSE | Test R2                      | Validation MAE | Validation RMSE | Validation R2                |
-| ----------------- | ------------------------------- | -------- | --------- | ---------------------------- | -------------- | --------------- | ---------------------------- |
-| Ridge             | `ridge_20260409_214544`         | 11.23    | 12.26     | 0.808                        | 7.19           | 7.83            | -0.301                       |
-| XGBoost           | `xgboost_20260409_214512`       | 11.51    | 13.40     | 0.771                        | 13.53          | 14.93           | -3.738                       |
-| Random Forest     | `random_forest_20260409_214422` | 11.67    | 13.98     | 0.751                        | 15.03          | 16.41           | -4.720                       |
-| Linear Regression | `linear_20260409_183522`        | 27.11    | 27.12     | 0.062                        | 0.58           | 0.82            | 0.986                        |
-| GRU               | `gru_20260408_200734`           | 36.83    | 44.16     | not logged in that older run | 3.69           | 4.30            | not logged in that older run |
-| LSTM              | `lstm_20260408_200714`          | 36.91    | 44.18     | not logged in that older run | 3.64           | 4.24            | not logged in that older run |
+| Model             | Best Experiment                 | Test MAE | Test RMSE | Test R2 | Validation MAE | Validation RMSE | Validation R2 |
+| ----------------- | ------------------------------- | -------- | --------- | ------- | -------------- | --------------- | ------------- |
+| XGBoost           | `xgboost_20260411_095234`       | 10.90    | 12.94     | 0.786   | 13.83          | 15.25           | -3.941        |
+| Ridge             | `ridge_20260409_214544`         | 11.23    | 12.26     | 0.808   | 7.19           | 7.83            | -0.301        |
+| LSTM              | `lstm_20260411_113957`          | 11.28    | 13.57     | 0.744   | 2.47           | 3.01            | 0.723         |
+| Random Forest     | `random_forest_20260411_113657` | 11.64    | 13.97     | 0.751   | 15.40          | 16.77           | -4.978        |
+| SVR               | `svr_20260411_110439`           | 20.37    | 25.03     | 0.201   | 19.63          | 21.84           | -9.135        |
+| MLP               | `mlp_20260411_110439`           | 23.71    | 30.00     | -0.148  | 28.71          | 30.11           | -18.269       |
+| Linear Regression | `linear_20260409_183522`        | 27.11    | 27.12     | 0.062   | 0.58           | 0.82            | 0.986         |
+| GRU               | `gru_20260411_095350`           | 34.58    | 42.14     | -1.464  | 4.51           | 5.29            | 0.146         |
 
 
 ### Best-performing models overall right now
 
 At the moment, the strongest models are:
 
-1. **Ridge Regression**
-2. **XGBoost**
-3. **Random Forest**
+1. **XGBoost**
+2. **Ridge Regression**
+3. **LSTM / Random Forest are close behind depending on whether you prioritize MAE or R2**
 
-These are the most promising because they perform far better than the sequence models on the unseen test battery.
+These are the most promising because they currently give the best unseen-battery test performance. The latest sweeps also show that a tuned LSTM can become competitive, even though the strongest overall results are still coming from the engineered-feature pipeline.
 
 ---
 
@@ -660,16 +700,15 @@ That usually means it learned battery-specific patterns instead of general batte
 
 #### LSTM
 
-- validation MAE is very low
-- test MAE is extremely high
+- older runs showed a strong validation-versus-test gap
+- after tuning sequence length and hidden size, later runs improved a lot on the unseen battery
 
-This means the LSTM learned the training batteries well, but did not generalize to the unseen battery.
+This means the earlier LSTM setup was overfitting, but the newer tuned LSTM is much more competitive and should not be described as a failed model anymore.
 
 #### GRU
 
-- same pattern as LSTM
-- strong validation
-- poor test performance
+- validation is much better than test
+- test performance is still poor in the current setup
 
 #### Linear Regression
 
@@ -692,21 +731,22 @@ This suggests the model fits the seen batteries in a way that does not transfer 
 
 #### Ridge Regression
 
-- currently gives the best single test result among all recorded runs
+- currently gives the best recorded test RMSE and test R2, while XGBoost has the best recorded test MAE
 - however, it should still be treated carefully and confirmed with more battery-wise testing because the dataset is small
 
 ### Main conclusion on overfitting
 
-The most obvious overfitting signs in this project are from:
+The most obvious overfitting signs in the current results are from:
 
-- LSTM
 - GRU
 - plain Linear Regression
+- MLP and some SVR settings
 
 The most trustworthy current models are:
 
-- Ridge
 - XGBoost
+- Ridge
+- tuned LSTM
 - Random Forest
 
 ---
@@ -757,13 +797,14 @@ In this project, the sequence models:
 
 show signs of overfitting and poor generalization.
 
-The most effective current models are the tabular models:
+The most effective current models are:
 
-- Ridge Regression
 - XGBoost
+- Ridge Regression
+- tuned LSTM
 - Random Forest
 
-So the present evidence suggests that, for this dataset and feature design, **well-tuned tabular models outperform the current sequence models**.
+So the present evidence suggests that, for this dataset and feature design, **engineered tabular models remain the strongest overall, but a tuned LSTM can become competitive while GRU still underperforms in the current setup**.
 
 ---
 
@@ -787,4 +828,4 @@ Important files in the repository:
 
 If you need a short version to say in class:
 
-> This project predicts lithium-ion battery remaining useful life using the NASA battery dataset. We only use discharge cycles as supervised samples because RUL is defined by discharge capacity degradation. We engineer battery-health features such as capacity fade, resistance, temperature, and voltage-curve points, then train multiple models including linear regression, ridge regression, random forest, XGBoost, LSTM, and GRU. We split the data battery-wise so that one battery remains completely unseen during testing. Our results show that the current tabular models, especially ridge, XGBoost, and random forest, generalize much better than the sequence models, while LSTM and GRU show strong signs of overfitting. This means that for this project, careful feature engineering plus well-tuned classical models works better than the current deep sequence models.
+> This project predicts lithium-ion battery remaining useful life using the NASA battery dataset. We only use discharge cycles as supervised samples because RUL is defined by discharge capacity degradation. We engineer battery-health features such as capacity fade, resistance, temperature, and voltage-curve points, then train multiple models including linear regression, ridge regression, random forest, XGBoost, SVR, MLP, LSTM, and GRU. We split the data battery-wise so that one battery remains completely unseen during testing. Our latest results show that XGBoost and Ridge are still the strongest overall models, and a tuned LSTM has become competitive, while GRU and some other baselines still show poor generalization. This means that for this project, careful feature engineering and proper evaluation matter more than model complexity alone.
